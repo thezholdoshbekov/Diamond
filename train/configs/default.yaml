@@ -1,0 +1,240 @@
+# Base configuration. Child configs inherit it (`defaults: default.yaml`) and
+# override what they change. Any key can also be overridden from the command
+# line: --override training.lr=1e-4
+
+# ─── Mel extractor (Q1) ──────────────────────────────────────────────────────
+mel:
+  sample_rate: 24000
+  n_fft: 1024
+  hop_length: 280              # frame rate ≈ 85.7 Hz, aligned with DAC 86 Hz
+  win_length: 1024
+  n_mels: 80
+  fmin: 0
+  fmax: 8000                   # podcast useful band; bins above wasted
+  log_clamp_db: -80
+  normalization: minmax        # (db + 80) / 80 * 2 - 1 → [-1, 1]
+
+# ─── DAC (frozen target encoder + waveform decoder) ──────────────────────────
+dac:
+  model: 44khz                 # DAC 44.1 kHz, 9 codebooks
+  sample_rate: 44100
+  n_codebooks: 9
+  vocab_size: 1024
+  frame_rate: 86.13            # tokens per second
+  checkpoint_path: data/pretrained/dac_44khz.pth
+
+# ─── Encoder (Q3) ────────────────────────────────────────────────────────────
+encoder:
+  n_mels: 80
+  d_model: 512
+  n_heads: 8
+  n_layers: 20
+  ff_dim: 2048
+  conv_channels: [512, 512]
+  conv_kernel: 3
+  conv_stride: [1, 1]          # NO downsample
+  pos_encoding: rope
+  norm: rms
+  activation: gelu
+  dropout: 0.1
+  bidirectional: true
+  # LayerScale γ initial value per residual branch. Fixes L0 weight runaway
+  # by giving each layer its own learnable contribution gate.
+  # 0.1 is the standard for 12-layer stacks (CaiT uses 1e-4 for 24+ layers).
+  layer_scale_init: 0.1
+  # Learnable per-layer RoPE α (Kani TTS 2 style). Init at α≈1.05 (≈ standard
+  # RoPE), each layer learns its own position-zoom in [0.1, 2.0]. Set false
+  # to fall back to plain fixed-base RoPE.
+  rope_learnable: false        # opt-in via pilot/serious override
+  # QK-Norm (Henry 2020; ViT-22B; Wortsman 2023): RMSNorm on per-head Q/K
+  # before attention → bounds attention-logit magnitude, the dominant grad-spike
+  # source in deep transformers. Off by default; opt-in via pilot.
+  qk_norm: false
+
+# ─── Time-transformer ────────────────────────────────────────────────────────
+# One hidden vector per DAC frame, 1:1 with the frame rate. The depth-transformer
+# below then walks the 9 codebooks inside each frame and owns the read-out.
+# The key is named `decoder` for historical reasons; it IS the time-transformer.
+decoder:
+  d_model: 512
+  n_heads: 8
+  n_layers: 20
+  ff_dim: 2048
+  n_codebooks: 9
+  vocab_size: 1024             # logits vocab; embedding table adds a BOS row → 1025
+  # Variable-length token grids are padded to the batch max. Padded frames are
+  # masked out of the loss, so PAD can safely reuse the BOS row (index 1024) in
+  # the 1025-row embedding table — no separate PAD row is needed.
+  pad_token_id: 1024
+  bos_token_id: 1024
+  pos_encoding: rope
+  norm: rms
+  activation: gelu
+  dropout: 0.1
+  cross_attn_every_layer: true
+  rope_learnable: false        # opt-in via pilot/serious override
+  qk_norm: false               # opt-in via pilot — see encoder.qk_norm
+  layer_scale_init: 0.1
+
+# ─── Depth-transformer ───────────────────────────────────────────────────────
+# A small causal transformer over the 9-codebook axis inside each frame. This is
+# the architectural point of the model: it restores the RVQ causal chain (each
+# codebook sees the ones before it) and distributes the read-out. The earlier
+# design — nine parallel heads reading one shared hidden vector — made those
+# read-out weights inflate without bound.
+#
+# Small by design (~1/15 of the time-transformer): it refines, it does not carry
+# the signal. These dimensions must match the released checkpoint.
+depth:
+  d_model: 384
+  n_heads: 6                   # head_dim = 64
+  n_layers: 4
+  ff_dim: 1536
+  dropout: 0.1
+  qk_norm: true
+  layer_scale_init: 0.1
+
+# ─── Loss (Q5) ───────────────────────────────────────────────────────────────
+loss:
+  # Per-codebook loss weights.
+  #
+  # The leading 1.5 boosts cb0, which empirically carries most of the phonetic
+  # content — the same trick Moshi uses for its semantic codebook.
+  #
+  # The tail (0.5) matters just as much: weight the fine codebooks too weakly and
+  # they never get real gradient, collapse to the mode token, and the fricatives
+  # and plosives (/s/ /sh/ /t/ /k/) vanish — which shows up as a CER explosion at
+  # inference, not as a worse loss.
+  codebook_weights: [1.5, 0.95, 0.85, 0.75, 0.65, 0.55, 0.5, 0.5, 0.5]
+  label_smoothing: 0.1
+  reduction: mean              # mean per valid (non-PAD) position
+  # z-loss (PaLM, Chowdhery 2022): penalizes log² of softmax partition →
+  # prevents logit/output-head inflation. Off by default; opt-in via pilot.
+  z_loss_weight: 0.0
+
+# ─── Data ────────────────────────────────────────────────────────────────────
+data:
+  # Multi-source studio data. Each entry: {repo, config, split, id_prefix}.
+  # `id_prefix` namespaces output filenames so sources don't collide on disk.
+  # `config` is HF dataset config (subset name); set to null if not needed.
+  studio_sources:
+    - repo: mythicinfinity/libritts_r
+      config: clean
+      split: train.clean.100
+      id_prefix: libritts_c100
+    - repo: mythicinfinity/libritts_r
+      config: clean
+      split: train.clean.360
+      id_prefix: libritts_c360
+  studio_tokens_dir: data/studio_tokens
+  augmentor_path: augmentation        # vendored PodcastAugmentorV4 (this repo)
+  audio_seconds: 10.0          # legacy fixed length — used only when crop_seconds_range is null
+  # Per-sample crop length drawn uniformly from [lo, hi]. Set null for legacy
+  # fixed-length crop (= audio_seconds). With variable crop the encoder sees
+  # both short (≈ inference chunk_sec=2.5) and long contexts, eliminating the
+  # train/test length OOD that causes encoder cold-start at chunk boundaries.
+  crop_seconds_range: null     # opt-in via pilot/serious; e.g. [2.5, 10.0]
+  random_crop: true
+  # Random crops almost never land on the true start of an utterance, so without
+  # this the model never sees an utterance beginning — and then cold-starts on
+  # the first chunk at inference.
+  start_at_zero_prob: 0.2
+  online_augmentation: true    # DataLoader applies PodcastAugmentorV4 per sample
+  n_samples: null              # null = all; integer to subsample (smoke testing)
+  disable_noise: false         # when true: zeroes noise_target_db + speech_noise_snr_db
+
+  # Robustness track, separate from the retrieval augmentor. The augmentor
+  # reproduces codec degradation; this adds what it does not cover — handling
+  # noise, room tone, reverb. Applied to a minority of samples, around the
+  # augmentor, without touching it:
+  #   • RIR convolved BEFORE the codec  — reverb survives codec (it reshapes the
+  #     spectral/temporal envelope, not maskable broadband).
+  #   • broadband noise mixed AFTER the codec — survives by construction.
+  #     (Pre-codec broadband gets stripped by MP3 psychoacoustic masking —
+  #      augmentor "Variant B" lesson — so post-codec is the only placement that
+  #      lets the model actually see, and learn to remove, the noise.)
+  # The target stays the dry/clean studio tokens → model learns dereverb+denoise.
+  noise_aug:
+    enabled: false                                       # opt-in via pilot.yaml
+    noise_dir: data/noise_corpora                        # MUSAN noise + DNS noise wavs (recursive)
+    rir_dir: data/noise_corpora/RIRS_NOISES
+    noise_prob: 0.15           # P(mix broadband noise post-codec) per sample
+    rir_prob: 0.15             # P(convolve RIR pre-codec) per sample
+    snr_db_range: [0.0, 20.0]  # noise mix SNR drawn uniformly (URGENT used [-5,20]; podcast is milder)
+
+# ─── DataLoader ──────────────────────────────────────────────────────────────
+dataloader:
+  num_workers: 8              # = host core count. Tried 12 — thrashed (load avg ~14 with LAME/FFmpeg subprocesses fork'ed per worker). 6 was data-bound (GPU 0%). 8 is the goldilocks.
+  prefetch_factor: 3          # 8 × 3 = 24 in flight; matches earlier 6×4 buffer
+  persistent_workers: true
+  pin_memory: true
+  shuffle: true
+
+# ─── Training (Q6) — overridden by pilot/serious ─────────────────────────────
+training:
+  batch_size: 16
+  grad_accumulation_steps: 2
+  total_steps: 200000
+  warmup_steps: 2000
+  lr: 3.0e-4
+  betas: [0.9, 0.95]
+  weight_decay: 0.01
+  weight_decay_exclude: [bias, norm, embedding]
+  schedule: cosine
+  min_lr_ratio: 0.1            # final LR = 0.1 × peak
+  grad_clip_norm: 1.0
+  precision: bf16-mixed
+  device: cuda
+  # Scheduled sampling (Bengio 2015) — feeds decoder its own predictions
+  # during training with probability ss_prob, so it learns to recover from
+  # its own mistakes. Directly addresses greedy silence-collapse at inference.
+  scheduled_sampling:
+    enabled: false             # opt-in (pilot/serious override)
+    max_prob: 0.25             # cap — keep most positions teacher-forced
+    warmup_steps: 20000        # linear ramp 0 → max_prob
+    start_step: 5000           # don't start until base training has loss < ~3
+
+# ─── Inference (Q4 — greedy) ─────────────────────────────────────────────────
+inference:
+  sampling: greedy             # greedy | top_k | top_p
+  temperature: 1.0
+  top_k: null
+  top_p: null
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+logging:
+  framework: wandb             # wandb | tensorboard | none
+  project: speech-restoration-s2s
+  run_name: null               # if null → auto-derived from config name + date
+  tags: []                     # e.g. ["pilot", "mini", "libritts-r"]
+  notes: null                  # free-form description shown on the run page
+  log_every_steps: 50
+  log_per_codebook_acc: true
+  log_grad_norm: true
+  alert_on_nan: true           # wandb.alert when loss=nan/inf
+  sample_inference_every_steps: 5000
+  sample_inference_count: 4
+  eval_every_steps: 10000
+  eval_n_samples: 50
+
+# ─── Eval (downstream signals for ckpt selection) ────────────────────────────
+eval:
+  cer:
+    enabled: false             # opt-in (pilot/serious enable)
+    every_steps: 5000          # cadence — ~30 sec/eval on GPU at n=20
+    start_step: 10000          # don't bother until model produces semi-coherent audio
+    n_samples: 20              # heldout subset for fast eval
+    eval_seconds: 5.0          # cap each sample (faster eval, matches train context)
+    heldout_dir: data/heldout
+    whisper_model: tiny.en     # 39M ASR, fast on CPU int8
+    whisper_device: cpu        # keep GPU for training
+    whisper_compute_type: int8
+    dac_device: cuda           # DAC decoder runs on GPU (fast, ~74M frozen)
+
+# ─── Checkpointing ───────────────────────────────────────────────────────────
+checkpoint:
+  save_every_steps: 10000
+  save_dir: checkpoints/default/
+  keep_last_n: 3
+  save_best_dnsmos: true
+  resume_from: null

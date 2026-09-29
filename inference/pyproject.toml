@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diamond-s2s"
+version = "1.0.0"
+description = "Diamond — sequence-to-sequence speech restoration over neural audio codec tokens (v10 RQ-Transformer)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Almaz Zholdoshbek uulu" }]
+keywords = ["speech-restoration", "speech-enhancement", "audio-codec", "rvq", "sequence-to-sequence"]
+
+dependencies = [
+    "torch>=2.1",
+    "torchaudio>=2.1",
+    "descript-audio-codec>=1.0.0",
+    "omegaconf>=2.3",
+    "safetensors>=0.4",
+    "numpy>=1.24",
+    "soundfile>=0.12",
+    "huggingface-hub>=0.20",
+]
+
+[project.optional-dependencies]
+# mp3 / exotic-format decoding fallback when soundfile can't read the input
+mp3 = ["librosa>=0.10"]
+
+[project.scripts]
+diamond-restore = "diamond.cli.infer:main"
+
+[project.urls]
+"Model weights" = "https://huggingface.co/nineninesix/diamond-1.0"
+
+[tool.setuptools.packages.find]
+include = ["diamond*"]

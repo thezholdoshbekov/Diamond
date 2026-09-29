@@ -1,0 +1,77 @@
+Diamond — Training
+Copyright 2026 the Diamond authors.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The training stack downloads and loads third-party models and datasets at
+runtime. They are NOT covered by this repository's Apache-2.0 license — each is
+governed by the license of its own source. Check them before redistributing a
+trained model or any artifact derived from them.
+
+The permissive third-party licenses named below (MIT) are compatible with this
+repository's Apache-2.0 license; using them imposes no relicensing on Diamond.
+None of these third parties' source code is vendored here — they are fetched or
+installed at runtime — so their notices are reproduced for attribution only.
+
+--------------------------------------------------------------------------------
+Models
+--------------------------------------------------------------------------------
+
+Descript Audio Codec (DAC), 44.1 kHz — MIT License, © Descript, Inc.
+  Fetched by `make dac` via `dac.utils.download()`; installed as the
+  `descript-audio-codec` PyPI package.
+  Source: https://github.com/descriptinc/descript-audio-codec
+  Used frozen: encoder produces the RVQ training targets, decoder reconstructs
+  the waveform at inference. Its weights are not modified by training.
+
+DNSMOS P.835 — Microsoft DNS-Challenge repository (see that repository for its
+  license terms).
+  Fetched by `make dnsmos` from the Microsoft DNS-Challenge repository.
+  Source: https://github.com/microsoft/DNS-Challenge
+  Used for evaluation only (`make eval`); not part of the trained model.
+
+Whisper (`tiny.en`, optional) — MIT License, © OpenAI.
+  Pulled by the in-training CER eval when `eval.cer.enabled` is set. The eval is
+  run through faster-whisper (below), not the reference OpenAI implementation.
+  Source: https://github.com/openai/whisper
+
+--------------------------------------------------------------------------------
+Tools (runtime dependencies)
+--------------------------------------------------------------------------------
+
+faster-whisper — MIT License, © SYSTRAN. Built on CTranslate2.
+  Provides the `WhisperModel` runtime used by the optional in-training CER eval
+  (`diamond/training/eval_cer.py`). Optional `eval` extra.
+  Source: https://github.com/SYSTRAN/faster-whisper
+
+Silero VAD — MIT License, © Silero Team.
+  Used offline to extract the committed `augmentation/noise_bank/` silence and
+  background segments. Not a runtime training dependency.
+  Source: https://github.com/snakers4/silero-vad
+
+FFmpeg — invoked as an external binary (subprocess) by the DSP augmentor
+  (`augmentation/augment_pipeline.py`) for MP3/AAC/OGG codec simulation. Not
+  bundled or linked; governed by the license of the FFmpeg build you install
+  (typically LGPL-2.1+ or GPL depending on the build).
+  Source: https://ffmpeg.org
+
+--------------------------------------------------------------------------------
+Datasets
+--------------------------------------------------------------------------------
+
+Training uses the public speech corpora listed in `configs/pilot.yaml`
+(`data.studio_sources`): LibriTTS-R, HiFi-TTS, VCTK, EARS, and Expresso. Each
+carries its own license and citation requirements — see the corresponding
+Hugging Face dataset cards.
+
+The augmentation target pool (`nineninesix/emolia_filtered_features`) holds
+degradation fingerprints — numeric channel features, no audio.
+
+The committed noise samples in `augmentation/noise_bank/` are non-speech noise
+segments drawn from the Emolia corpus (background/silence only, no speech),
+extracted with Silero VAD. They ship in this repository, so their terms travel
+with any redistribution — see the Emolia dataset terms.
+
+The optional broadband-noise / RIR track (`data.noise_aug`) expects MUSAN or DNS
+noise and OpenSLR-28 room impulse responses, which you supply yourself; this
+repository neither ships nor downloads them.

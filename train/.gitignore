@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.venv/
+venv/
+dist/
+build/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Project data (large, never commit) — anchored to repo root only
+/data/
+/checkpoints/
+/release/
+/wandb/
+/runs/
+*.wav
+*.mp3
+*.flac
+*.pt
+*.ckpt
+*.safetensors
+
+# Augmentation target pool — 284 MB, fetched from HF by `make augmentor`
+augmentation/podcast_target_pool.csv
+
+# ...but DO commit the vendored real-noise bank (5.7 MB) — the global *.wav
+# rule above would otherwise exclude these.
+!augmentation/noise_bank/
+!augmentation/noise_bank/wav/
+!augmentation/noise_bank/wav/*.wav
+
+# Logs
+*.log
+nohup.out
+
+# Secrets — never commit
+.env
+*.token
+uv.lock

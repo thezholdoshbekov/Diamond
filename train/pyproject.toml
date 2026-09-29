@@ -1,0 +1,59 @@
+[project]
+name = "diamond-train"
+version = "1.0.0"
+description = "Diamond (v10 RQ-Transformer) — speech restoration: training pipeline + DSP augmentation"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+
+dependencies = [
+    "torch>=2.2",
+    "torchaudio>=2.2",
+    "descript-audio-codec>=1.0.0",
+    "omegaconf>=2.3",
+    "einops>=0.7",
+    "numpy>=1.24,<2.0",
+    "librosa>=0.10",
+    "soundfile>=0.12",
+    "tqdm>=4.65",
+    "pandas>=2.0",
+    "datasets>=2.14",
+    "torchcodec>=0.1",
+    "safetensors>=0.4",
+    "huggingface-hub>=0.20",
+    "wandb>=0.16",
+    # augmentation (vendored PodcastAugmentorV4)
+    "scikit-learn>=1.3",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1",
+    "ipython>=8.0",
+]
+eval = [
+    "onnxruntime>=1.16",
+    "faster-whisper>=1.0",
+    "jiwer>=3.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["diamond"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

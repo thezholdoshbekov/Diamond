@@ -1,0 +1,179 @@
+# The configuration the released model was trained with.
+# Inherits default.yaml; overrides only what changes.
+
+defaults: default.yaml
+
+# ─── Hardware target ─────────────────────────────────────────────────────────
+hardware: gpu_96gb          # the box this was trained on; informational only
+
+# ─── Training ────────────────────────────────────────────────────────────────
+# 20 layers each side (~166.6M trainable). The depth is what gives the fine
+# codebooks room: starved of capacity they collapse to the mode token, and the
+# fricatives go with them.
+training:
+  batch_size: 8                # lower this first on OOM; keep batch x accum = 32
+  grad_accumulation_steps: 4   # effective batch 32
+  total_steps: 250000          # the cosine schedule decays over this whole span
+  warmup_steps: 2000
+  lr: 3.0e-4
+  schedule: cosine
+  grad_clip_norm: 1.0
+  precision: bf16-mixed
+  device: cuda
+  scheduled_sampling:
+    # Scheduled sampling along the DEPTH (codebook) axis only: at depth step k,
+    # the input for slot k+1 is the model's own prediction for codebook k with
+    # probability ss_prob. The blast radius is one frame — the next frame starts
+    # from a clean time-transformer hidden.
+    #
+    # Do NOT do this along the TIME axis. Feeding the model its own predictions
+    # across frames puts the errors into an unbounded autoregressive chain; that
+    # produced a gradient-spike storm the loss never recovered from.
+    #
+    # Leave it off until the coarse codebooks are learned (cb0 accuracy >= 0.4).
+    # Feeding a model its own garbage early only teaches it garbage.
+    enabled: false
+    max_prob: 0.5
+    warmup_steps: 30000
+    start_step: 30000
+
+# ─── Stability stack ─────────────────────────────────────────────────────────
+# Not tuning knobs. Each of these stopped a run from diverging:
+#   rope_learnable    per-layer learnable RoPE scale (init = standard RoPE)
+#   qk_norm           bounds attention-logit magnitude — the dominant source of
+#                     gradient spikes in a deep stack
+#   layer_scale_init  smaller for 20 layers; without LayerScale on the decoder,
+#                     its read-out weights run away
+encoder:
+  rope_learnable: true
+  qk_norm: true
+  layer_scale_init: 0.05
+decoder:
+  rope_learnable: true
+  qk_norm: true
+  layer_scale_init: 0.05
+
+# The depth-transformer settings must match the released checkpoint.
+depth:
+  qk_norm: true
+  layer_scale_init: 0.05
+
+# z-loss (PaLM): penalizes logit inflation in the read-out.
+loss:
+  z_loss_weight: 1.0e-4
+
+# ─── Data ────────────────────────────────────────────────────────────────────
+data:
+  # `make data` streams the sources below through the DAC and writes
+  # data/studio_tokens/manifest.csv (681.5 h across them). That is a one-off cost
+  # of several GPU-hours; the cache is then reused by every run.
+  disable_noise: false         # real recordings have a noise floor; the model must learn to remove it
+  # Robustness track: broadband noise mixed AFTER the codec, room impulse
+  # responses convolved BEFORE it. The order is not cosmetic — pre-codec
+  # broadband noise gets stripped by psychoacoustic masking, so the model would
+  # never see it. Fetch the corpora with scripts/download_noise.sh.
+  noise_aug:
+    enabled: true
+    noise_prob: 0.15
+    rir_prob: 0.15
+    snr_db_range: [0.0, 20.0]
+  # Variable crop length. The encoder has to see both the short contexts that
+  # inference actually uses (2.5 s chunks) and long ones (prosody). Training only
+  # at 10 s leaves it out-of-distribution on every chunk boundary at inference.
+  crop_seconds_range: [2.5, 10.0]
+  augmentor_kwargs:
+    jitter: 0.4
+    strategy_mix: [0.6, 0.25, 0.15]
+    clean_pass_prob: 0.05
+    # Degradations the codec palette does not cover: dropouts, room reverb,
+    # clipping.
+    packet_loss_prob: 0.15
+    reverb_prob: 0.10
+    hard_clip_prob: 0.10
+  # Clean speech corpora. Each is streamed (no full raw download), resampled to
+  # 44.1 kHz inside the DAC, and merged into one manifest. A source that fails to
+  # load is skipped rather than killing the run.
+  studio_sources:
+    # ── Native 44.1k+ ────────────────────────────────────────────────────────
+    - repo: MikhailT/hifi-tts            # 125989 clips, 44.1k native — config 'clean'
+      config: clean
+      split: train
+      id_prefix: hifitts
+    - repo: MikhailT/hifi-tts            # +196489 clips, 44.1k native — the 'other' config
+      config: other                      # (lower-quality speakers than 'clean', still native 44.1k)
+      split: train
+      id_prefix: hifitts_other
+    - repo: sanchit-gandhi/vctk          # ~80h, 48k, ~110 spk — parquet mirror (CSTR script loader is dead in datasets 3.x)
+      config: null
+      split: train
+      id_prefix: vctk
+    - repo: blanchon/ears_dataset_sentences  # ~100h(sentences subset), 48k, 107 spk
+      config: default
+      split: train
+      id_prefix: ears
+    - repo: ylacombe/expresso            # read portion ~11h, 48k, 4 spk expressive
+      config: read
+      split: train
+      id_prefix: expresso
+    # ── LibriTTS-R: 24 kHz upsampled, but a large speaker count for diversity ──
+    - repo: mythicinfinity/libritts_r    # c500 is config=other/train.other.500 (NOT clean.500)
+      config: other
+      split: train.other.500
+      id_prefix: libritts_c500
+    - repo: mythicinfinity/libritts_r
+      config: clean
+      split: train.clean.100
+      id_prefix: libritts_c100
+    - repo: mythicinfinity/libritts_r
+      config: clean
+      split: train.clean.360
+      id_prefix: libritts_c360
+    # Add your own clean 44.1k sources here (repo / config / split / id_prefix),
+    # or use `make data-local AUDIO_DIR=...` to tokenize a local audio folder.
+
+# ─── DataLoader ──────────────────────────────────────────────────────────────
+# The augmentor is CPU-bound (an ffmpeg/LAME subprocess per sample), so this is
+# what starves the GPU. Roughly (cores - 8); 24 assumes a 32-core host.
+dataloader:
+  num_workers: 24
+  prefetch_factor: 4
+  persistent_workers: true
+  pin_memory: true
+  shuffle: true
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+logging:
+  project: speech-restoration-s2s
+  run_name: null               # null -> auto-derived from the config name
+  force_new_wandb_run: false   # on resume, continue the run stored in the checkpoint
+  wandb_run_id: null
+  tags: ["pilot"]
+  notes: null
+  log_every_steps: 50
+  eval_every_steps: 10000
+  eval_n_samples: 50
+
+# ─── Eval ────────────────────────────────────────────────────────────────────
+# Training loss does not predict inference quality — we measured a lower-loss
+# checkpoint decoding WORSE. Select checkpoints on CER, not on loss.
+eval:
+  cer:
+    enabled: true
+    every_steps: 5000
+    start_step: 15000          # nothing worth transcribing before this
+    n_samples: 20
+    eval_seconds: 5.0
+    heldout_dir: data/heldout
+    whisper_model: tiny.en
+    whisper_device: cpu
+    whisper_compute_type: int8
+    dac_device: cuda
+
+# ─── Checkpointing ───────────────────────────────────────────────────────────
+checkpoint:
+  save_every_steps: 500
+  save_dir: checkpoints/pilot/
+  keep_last_n: 30             # rolling window (~75 GB); best_cer.pt / best_dnsmos.pt kept separately
+  hf_repo: null               # set to an HF repo id to auto-push checkpoints, or push manually at the end
+  resume_from: null           # null = fresh start; set to a .pt/.safetensors path to resume or warm-start (fine-tune)
+  reset_optimizer_on_resume: false

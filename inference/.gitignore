@@ -1,0 +1,27 @@
+# weights & downloads (pulled from HF, never committed to git)
+data/pretrained/
+*.safetensors
+*.pt
+*.pth
+
+# audio artifacts
+*.wav
+*.mp3
+*.flac
+!**/examples/*.wav
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.eggs/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

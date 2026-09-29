@@ -1,0 +1,30 @@
+Diamond — Inference
+Copyright 2026 the Diamond authors.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The inference stack loads a third-party model at runtime. It is NOT covered by
+this repository's Apache-2.0 license. The permissive third-party license named
+below (MIT) is compatible with this repository's Apache-2.0 license and imposes
+no relicensing on Diamond. Its source is not vendored here — it is fetched at
+runtime — so its notice is reproduced for attribution only.
+
+--------------------------------------------------------------------------------
+Models
+--------------------------------------------------------------------------------
+
+Descript Audio Codec (DAC), 44.1 kHz — MIT License, © Descript, Inc.
+  Downloaded on first run via `dac.utils.download()`; installed as the
+  `descript-audio-codec` PyPI package.
+  Source: https://github.com/descriptinc/descript-audio-codec
+  Used frozen: its decoder renders the predicted RVQ codes back into a waveform.
+  Its weights are not modified.
+
+--------------------------------------------------------------------------------
+Checkpoints
+--------------------------------------------------------------------------------
+
+The Diamond weights (`nineninesix/diamond-1.0`) were trained with the pipeline in
+the diamond-train repository (https://github.com/nineninesix-ai/diamond-train),
+on the public speech corpora listed in its configuration. Those corpora carry
+their own licenses — see the NOTICE file of diamond-train.
